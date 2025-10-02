@@ -1,19 +1,30 @@
-FROM runpod/pytorch:3.10-2.1.2-12.1.0
+FROM nvidia/cuda:12.1.0-base-ubuntu22.04
 
 WORKDIR /app
 
-# Optional system packages sometimes needed by OpenCV and fonts used by EasyOCR
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1 libglib2.0-0 \
+# System deps for Python and image libs
+RUN apt-get update -y \
+    && apt-get install -y --no-install-recommends \
+       python3-pip python3-dev build-essential \
+       libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+# Ensure CUDA compat libs are visible
+RUN ldconfig /usr/local/cuda-12.1/compat/
+
+# Install CUDA-enabled PyTorch first to avoid CPU wheels pulled by downstream deps
+RUN python3 -m pip install --no-cache-dir --upgrade pip
+RUN python3 -m pip install --no-cache-dir \
+    --index-url https://download.pytorch.org/whl/cu121 \
+    torch==2.3.1 torchvision==0.18.1 torchaudio==2.3.1
+
+# Then install the rest
+COPY requirements.txt /requirements.txt
+RUN python3 -m pip install --no-cache-dir -r /requirements.txt
 
 COPY . .
 
 ENV PYTHONUNBUFFERED=1 \
     READER_LANGS=ch_sim,en
 
-CMD ["python", "-u", "handler.py"]
-
+CMD ["python3", "-u", "handler.py"]
