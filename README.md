@@ -2,7 +2,7 @@
 
 [![Runpod](https://api.runpod.io/badge/napatswift/runpod-easyocr)](https://console.runpod.io/hub/napatswift/runpod-easyocr)
 
-Serverless OCR for PDF files using EasyOCR on Runpod. Provide public PDF URLs and get extracted text with bounding boxes (normalized to 0..1) and confidence per page.
+Serverless OCR for PDF files using EasyOCR on Runpod. Provide public PDF URLs and get extracted text with bounding boxes (normalized to 0..1) and confidence per page. Images are auto-rotated using Tesseract OSD before OCR.
 
 ## Input schema
 
@@ -17,6 +17,8 @@ Serverless OCR for PDF files using EasyOCR on Runpod. Provide public PDF URLs an
 - `batched`: Use EasyOCR `readtext_batched` to process pages in a batch (default `false`).
 - `n_width`/`n_height`: When batching, resize all pages to these exact dimensions. If not provided and pages differ in size, the largest width/height are used.
 - `cudnn_benchmark`: Enables cuDNN benchmark mode for consistent batch sizes (default `false`).
+ 
+Orientation: The worker uses Tesseract OSD to detect and correct page orientation prior to OCR. This helps with multilingual documents (Thai, Chinese, English). Minimal orientation metadata is attached per page.
 
 ## Example request body
 
@@ -49,7 +51,8 @@ Serverless OCR for PDF files using EasyOCR on Runpod. Provide public PDF URLs an
           "index": 0,
           "results": [
             { "box": [[x,y],...], "text": "...", "confidence": 0.99 }
-          ]
+          ],
+          "orientation": { "rotate": 0, "script": "Latin" }
         }
       ]
     }
@@ -77,3 +80,4 @@ You can run the handler locally by setting `INPUT_JSON` and executing the file, 
 - The EasyOCR Reader is cached between requests to avoid reloading weights.
 - Set default languages via env `READER_LANGS` (e.g., `ch_sim,en`).
  - Output `box` coordinates are normalized: `x` in [0.0,1.0] relative to image width and `y` in [0.0,1.0] relative to image height.
+ - Pages are orientation-corrected using Tesseract OSD (`pytesseract`). The base image contains Tesseract and language packs for Thai, Simplified/Traditional Chinese, and English.

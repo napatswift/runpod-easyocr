@@ -25,6 +25,14 @@ except Exception as e:
         "Pillow and numpy are required for batched processing."
     ) from e
 
+try:
+    import pytesseract
+    from pytesseract import Output as TessOutput
+except Exception as e:
+    raise RuntimeError(
+        "pytesseract is required for orientation detection."
+    ) from e
+
 
 def _to_py_scalar(x: Any) -> Any:
     if isinstance(x, (np.integer,)):
@@ -110,6 +118,42 @@ def image_bytes_to_array(image_bytes: bytes) -> np.ndarray:
     with Image.open(io.BytesIO(image_bytes)) as im:
         im = im.convert("RGB")
         return np.array(im)
+
+
+def image_bytes_size(image_bytes: bytes) -> Tuple[int, int]:
+    """Deprecated: prefer sizes returned by pdf_pages_to_png_bytes."""
+    with Image.open(io.BytesIO(image_bytes)) as im:
+        return im.size
+
+
+def correct_orientation_bytes(
+    image_bytes: bytes,
+) -> Tuple[bytes, Tuple[int, int], Dict[str, Any]]:
+    """
+    Detect orientation via Tesseract OSD and rotate the image bytes if needed.
+    Returns (new_bytes, (width,height), osd_dict).
+    """
+    with Image.open(io.BytesIO(image_bytes)) as im:
+        rgb = im.convert("RGB")
+        osd: Dict[str, Any] = {}
+        rotate_degrees = 0
+        try:
+            osd = pytesseract.image_to_osd(rgb, output_type=TessOutput.DICT)
+            rotate_degrees = int(osd.get("rotate", 0) or 0)
+        except Exception:
+            # If OSD fails, proceed without rotation
+            osd = {"rotate": 0}
+
+        rotated = rgb
+        if rotate_degrees % 360 != 0:
+            # PIL rotates counter-clockwise for positive angles; matches tutorial usage
+            rotated = rgb.rotate(rotate_degrees, expand=True)
+
+        buf = io.BytesIO()
+        rotated.save(buf, format="PNG")
+        data = buf.getvalue()
+        w, h = rotated.size
+        return data, (w, h), osd
 
 
 def ocr_image_bytes(
@@ -254,27 +298,47 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
 
             if not batched:
                 for idx, img_bytes, (w, h) in page_images:
-                    results = ocr_image_bytes(reader, img_bytes, detail=detail)
-                    item["pages"].append(
-                        {
-                            "index": idx,
-                            "results": normalize_results(
-                                results, detail=detail, width=w, height=h
-                            ),
-                        }
+                    corrected_bytes, (cw, ch), osd = correct_orientation_bytes(
+                        img_bytes
                     )
+                    results = ocr_image_bytes(
+                        reader, corrected_bytes, detail=detail
+                    )
+                    page_out = {
+                        "index": idx,
+                        "results": normalize_results(
+                            results, detail=detail, width=cw, height=ch
+                        ),
+                    }
+                    # Attach minimal orientation metadata
+                    if isinstance(osd, dict):
+                        page_out["orientation"] = {
+                            "rotate": int(osd.get("rotate", 0) or 0),
+                            "script": osd.get("script"),
+                        }
+                    item["pages"].append(page_out)
             else:
                 # Prepare batch as numpy arrays
                 arrays: List[np.ndarray] = []
                 indices: List[int] = []
                 widths = []
                 heights = []
+                orientations: List[Dict[str, Any]] = []
                 for idx, img_bytes, (w, h) in page_images:
-                    arr = image_bytes_to_array(img_bytes)
+                    corrected_bytes, (cw, ch), osd = correct_orientation_bytes(
+                        img_bytes
+                    )
+                    arr = image_bytes_to_array(corrected_bytes)
                     arrays.append(arr)
                     indices.append(idx)
-                    widths.append(w)
-                    heights.append(h)
+                    widths.append(cw)
+                    heights.append(ch)
+                    orientations.append(
+                        {
+                            "rotate": int(osd.get("rotate", 0) or 0),
+                            "script": osd.get("script"),
+                        }
+                    )
 
                 # If sizes differ and no target provided, choose a common size
                 nw, nh = n_width, n_height
@@ -292,8 +356,8 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
                 )
 
                 # Map back to pages
-                for idx, res, w, h in zip(
-                    indices, batched_results, widths, heights
+                for idx, res, w, h, orient in zip(
+                    indices, batched_results, widths, heights, orientations
                 ):
                     eff_w = nw if nw else w
                     eff_h = nh if nh else h
@@ -303,6 +367,7 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
                             "results": normalize_results(
                                 res, detail=detail, width=eff_w, height=eff_h
                             ),
+                            "orientation": orient,
                         }
                     )
 
