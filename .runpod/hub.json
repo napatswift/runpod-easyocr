@@ -1,0 +1,33 @@
+{
+  "title": "Runpod EasyOCR (PDF)",
+  "description": "Serverless OCR for PDFs using EasyOCR. Provide public PDF URLs; returns text with boxes and confidence.",
+  "type": "serverless",
+  "category": "language",
+  "iconUrl": "https://example.com/icon.png",
+  "config": {
+    "runsOn": "GPU",
+    "containerDiskInGb": 20,
+    "presets": [
+      {
+        "name": "Chinese + English",
+        "defaults": {
+          "LANGUAGES": "ch_sim,en",
+          "GPU": "true",
+          "DPI": "200",
+          "DETAIL": "1"
+        }
+      }
+    ],
+    "env": [
+      {
+        "key": "READER_LANGS",
+        "input": {
+          "name": "Languages",
+          "type": "string",
+          "description": "Comma-separated languages passed to EasyOCR (e.g. 'ch_sim,en').",
+          "default": "ch_sim,en"
+        }
+      }
+    ]
+  }
+}

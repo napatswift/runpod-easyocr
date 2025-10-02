@@ -1,0 +1,4 @@
+runpod
+easyocr
+pymupdf
+requests

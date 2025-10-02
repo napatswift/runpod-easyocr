@@ -1,0 +1,52 @@
+{
+  "tests": [
+    {
+      "name": "ocr_single_pdf",
+      "input": {
+        "pdf_url": "https://arxiv.org/pdf/1708.01204.pdf",
+        "languages": ["ch_sim", "en"],
+        "gpu": true,
+        "detail": 0,
+        "dpi": 150,
+        "page_limit": 1
+      },
+      "timeout": 120000
+    },
+    {
+      "name": "ocr_multiple_pdfs",
+      "input": {
+        "pdf_urls": [
+          "https://arxiv.org/pdf/2107.00100.pdf",
+          "https://arxiv.org/pdf/1810.04805.pdf"
+        ],
+        "languages": ["en"],
+        "gpu": true,
+        "detail": 1,
+        "dpi": 200,
+        "page_limit": 1
+      },
+      "timeout": 180000
+    }
+  ],
+  "config": {
+    "gpuTypeId": "NVIDIA GeForce RTX 4090",
+    "gpuCount": 1,
+    "env": [
+      {
+        "key": "READER_LANGS",
+        "value": "ch_sim,en"
+      }
+    ],
+    "allowedCudaVersions": [
+      "12.7",
+      "12.6",
+      "12.5",
+      "12.4",
+      "12.3",
+      "12.2",
+      "12.1",
+      "12.0"
+    ]
+  }
+}
+
