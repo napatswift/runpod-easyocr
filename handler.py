@@ -26,6 +26,26 @@ except Exception as e:
     ) from e
 
 
+def _to_py_scalar(x: Any) -> Any:
+    if isinstance(x, (np.integer,)):
+        return int(x)
+    if isinstance(x, (np.floating,)):
+        return float(x)
+    if isinstance(x, (np.bool_,)):
+        return bool(x)
+    return x
+
+
+def json_safe(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        return {k: json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [json_safe(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return json_safe(obj.tolist())
+    return _to_py_scalar(obj)
+
+
 # Global cache for EasyOCR reader to avoid reloading weights on every request.
 _READER_CACHE: Dict[Tuple[Tuple[str, ...], bool, bool], easyocr.Reader] = {}
 
@@ -122,9 +142,22 @@ def normalize_results(results: List[Any], detail: int) -> List[Dict[str, Any]]:
             # If format is unexpected, pass-through
             normalized.append({"raw": item})
             continue
+        # Coerce bbox values to built-in Python numbers
+        safe_box = []
+        try:
+            for pt in bbox:
+                if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                    safe_box.append(
+                        [_to_py_scalar(pt[0]), _to_py_scalar(pt[1])]
+                    )
+                else:
+                    safe_box.append(json_safe(pt))
+        except Exception:
+            safe_box = json_safe(bbox)
+
         normalized.append(
             {
-                "box": bbox,
+                "box": safe_box,
                 "text": text,
                 "confidence": float(conf),
             }
@@ -252,17 +285,19 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
             item["error"] = str(e)
         outputs.append(item)
 
-    return {
-        "results": outputs,
-        "languages": languages,
-        "gpu": use_gpu,
-        "detail": detail,
-        "dpi": dpi,
-        "batched": batched,
-        "n_width": n_width,
-        "n_height": n_height,
-        "cudnn_benchmark": cudnn_benchmark,
-    }
+    return json_safe(
+        {
+            "results": outputs,
+            "languages": languages,
+            "gpu": use_gpu,
+            "detail": detail,
+            "dpi": dpi,
+            "batched": batched,
+            "n_width": n_width,
+            "n_height": n_height,
+            "cudnn_benchmark": cudnn_benchmark,
+        }
+    )
 
 
 runpod.serverless.start({"handler": handler})
