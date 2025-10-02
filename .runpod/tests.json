@@ -13,6 +13,22 @@
       "timeout": 120000
     },
     {
+      "name": "ocr_batched_pdf",
+      "input": {
+        "pdf_url": "https://arxiv.org/pdf/2107.00100.pdf",
+        "languages": ["en"],
+        "gpu": true,
+        "detail": 1,
+        "dpi": 150,
+        "page_limit": 2,
+        "batched": true,
+        "n_width": 1200,
+        "n_height": 1600,
+        "cudnn_benchmark": true
+      },
+      "timeout": 180000
+    },
+    {
       "name": "ocr_multiple_pdfs",
       "input": {
         "pdf_urls": [
@@ -49,4 +65,3 @@
     ]
   }
 }
-

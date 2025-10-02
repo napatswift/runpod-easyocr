@@ -8,22 +8,36 @@ import requests
 try:
     import fitz  # PyMuPDF
 except Exception as e:
-    raise RuntimeError("PyMuPDF (pymupdf) is required. Ensure it's installed.") from e
+    raise RuntimeError(
+        "PyMuPDF (pymupdf) is required. Ensure it's installed."
+    ) from e
 
 try:
     import easyocr
 except Exception as e:
     raise RuntimeError("easyocr is required. Ensure it's installed.") from e
 
+try:
+    import numpy as np
+    from PIL import Image
+except Exception as e:
+    raise RuntimeError(
+        "Pillow and numpy are required for batched processing."
+    ) from e
+
 
 # Global cache for EasyOCR reader to avoid reloading weights on every request.
-_READER_CACHE: Dict[Tuple[Tuple[str, ...], bool], easyocr.Reader] = {}
+_READER_CACHE: Dict[Tuple[Tuple[str, ...], bool, bool], easyocr.Reader] = {}
 
 
-def get_reader(languages: List[str], use_gpu: bool) -> easyocr.Reader:
-    key = (tuple(languages), bool(use_gpu))
+def get_reader(
+    languages: List[str], use_gpu: bool, cudnn_benchmark: bool = False
+) -> easyocr.Reader:
+    key = (tuple(languages), bool(use_gpu), bool(cudnn_benchmark))
     if key not in _READER_CACHE:
-        _READER_CACHE[key] = easyocr.Reader(languages, gpu=use_gpu)
+        _READER_CACHE[key] = easyocr.Reader(
+            languages, gpu=use_gpu, cudnn_benchmark=cudnn_benchmark
+        )
     return _READER_CACHE[key]
 
 
@@ -71,15 +85,34 @@ def pdf_pages_to_png_bytes(
     return images
 
 
-def ocr_image_bytes(reader: easyocr.Reader, image_bytes: bytes, detail: int = 1):
+def image_bytes_to_array(image_bytes: bytes) -> np.ndarray:
+    """Decode image bytes (PNG/JPEG) to RGB numpy array without OpenCV."""
+    with Image.open(io.BytesIO(image_bytes)) as im:
+        im = im.convert("RGB")
+        return np.array(im)
+
+
+def ocr_image_bytes(
+    reader: easyocr.Reader, image_bytes: bytes, detail: int = 1
+):
     # easyocr supports file path, numpy array, or bytes; we pass bytes.
     return reader.readtext(image_bytes, detail=detail)
 
 
 def normalize_results(results: List[Any], detail: int) -> List[Dict[str, Any]]:
     if detail == 0:
-        # results is just a list of strings
-        return [{"text": t} for t in results]
+        simplified = []
+        for t in results:
+            # If the library returned detailed tuples, extract text; else pass as-is
+            if (
+                isinstance(t, (list, tuple))
+                and len(t) >= 2
+                and isinstance(t[1], str)
+            ):
+                simplified.append({"text": t[1]})
+            else:
+                simplified.append({"text": t if isinstance(t, str) else str(t)})
+        return simplified
     normalized = []
     for item in results:
         # item = [bbox, text, confidence]
@@ -89,11 +122,13 @@ def normalize_results(results: List[Any], detail: int) -> List[Dict[str, Any]]:
             # If format is unexpected, pass-through
             normalized.append({"raw": item})
             continue
-        normalized.append({
-            "box": bbox,
-            "text": text,
-            "confidence": float(conf),
-        })
+        normalized.append(
+            {
+                "box": bbox,
+                "text": text,
+                "confidence": float(conf),
+            }
+        )
     return normalized
 
 
@@ -129,7 +164,9 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
 
     # Defaults
     default_langs = os.getenv("READER_LANGS", "ch_sim,en").split(",")
-    languages: List[str] = inp.get("languages") or [l.strip() for l in default_langs if l.strip()]
+    languages: List[str] = inp.get("languages") or [
+        l.strip() for l in default_langs if l.strip()
+    ]
     use_gpu: bool = bool(inp.get("gpu", True))
     detail: int = int(inp.get("detail", 1))
     dpi: int = int(inp.get("dpi", 200))
@@ -137,9 +174,13 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
     page_from = inp.get("page_from")
     page_to = inp.get("page_to")
     page_limit = inp.get("page_limit")
+    batched: bool = bool(inp.get("batched", False))
+    n_width: Optional[int] = inp.get("n_width")
+    n_height: Optional[int] = inp.get("n_height")
+    cudnn_benchmark: bool = bool(inp.get("cudnn_benchmark", False))
 
     # Initialize reader once per request based on languages + gpu
-    reader = get_reader(languages, use_gpu)
+    reader = get_reader(languages, use_gpu, cudnn_benchmark=cudnn_benchmark)
 
     outputs = []
     for url in pdf_urls:
@@ -154,18 +195,74 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
                 page_to=page_to,
                 page_limit=page_limit,
             )
-            for idx, img_bytes in page_images:
-                results = ocr_image_bytes(reader, img_bytes, detail=detail)
-                item["pages"].append({
-                    "index": idx,
-                    "results": normalize_results(results, detail=detail),
-                })
+
+            if not batched:
+                for idx, img_bytes in page_images:
+                    results = ocr_image_bytes(reader, img_bytes, detail=detail)
+                    item["pages"].append(
+                        {
+                            "index": idx,
+                            "results": normalize_results(
+                                results, detail=detail
+                            ),
+                        }
+                    )
+            else:
+                # Prepare batch as numpy arrays
+                arrays: List[np.ndarray] = []
+                indices: List[int] = []
+                widths = []
+                heights = []
+                for idx, img_bytes in page_images:
+                    arr = image_bytes_to_array(img_bytes)
+                    h, w = arr.shape[:2]
+                    heights.append(h)
+                    widths.append(w)
+                    arrays.append(arr)
+                    indices.append(idx)
+
+                # If sizes differ and no target provided, choose a common size
+                nw, nh = n_width, n_height
+                if (nw is None or nh is None) and (
+                    len(set(widths)) > 1 or len(set(heights)) > 1
+                ):
+                    # Pick max dims as a simple heuristic
+                    nw = max(widths)
+                    nh = max(heights)
+
+                # Run batched OCR. Avoid passing detail explicitly for compatibility.
+                # EasyOCR returns a list per image.
+                batched_results = reader.readtext_batched(
+                    arrays, n_width=nw, n_height=nh
+                )
+
+                # Map back to pages
+                for idx, res in zip(indices, batched_results):
+                    item["pages"].append(
+                        {
+                            "index": idx,
+                            "results": normalize_results(res, detail=detail),
+                        }
+                    )
+
+                # Keep output pages sorted by index
+                item["pages"].sort(key=lambda p: p["index"])
+
         except Exception as e:
             item["error"] = str(e)
         outputs.append(item)
 
-    return {"results": outputs, "languages": languages, "gpu": use_gpu, "detail": detail, "dpi": dpi}
+    return {
+        "results": outputs,
+        "languages": languages,
+        "gpu": use_gpu,
+        "detail": detail,
+        "dpi": dpi,
+        "batched": batched,
+        "n_width": n_width,
+        "n_height": n_height,
+        "cudnn_benchmark": cudnn_benchmark,
+    }
 
 
 runpod.serverless.start({"handler": handler})
-

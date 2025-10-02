@@ -14,6 +14,9 @@ Serverless OCR for PDF files using EasyOCR on Runpod. Provide public PDF URLs an
 - `page_indices`: List of zero-based page indices to process.
 - `page_from`/`page_to`: Page range (inclusive) to process.
 - `page_limit`: Max number of pages to process.
+- `batched`: Use EasyOCR `readtext_batched` to process pages in a batch (default `false`).
+- `n_width`/`n_height`: When batching, resize all pages to these exact dimensions. If not provided and pages differ in size, the largest width/height are used.
+- `cudnn_benchmark`: Enables cuDNN benchmark mode for consistent batch sizes (default `false`).
 
 ## Example request body
 
@@ -26,7 +29,11 @@ Serverless OCR for PDF files using EasyOCR on Runpod. Provide public PDF URLs an
   "gpu": true,
   "detail": 1,
   "dpi": 200,
-  "page_limit": 1
+  "page_limit": 1,
+  "batched": true,
+  "n_width": 1200,
+  "n_height": 1600,
+  "cudnn_benchmark": true
 }
 ```
 
@@ -69,4 +76,3 @@ You can run the handler locally by setting `INPUT_JSON` and executing the file, 
 - The worker uses PyMuPDF to render PDF pages to images, avoiding external system dependencies.
 - The EasyOCR Reader is cached between requests to avoid reloading weights.
 - Set default languages via env `READER_LANGS` (e.g., `ch_sim,en`).
-
