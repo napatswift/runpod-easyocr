@@ -74,7 +74,7 @@ def pdf_pages_to_png_bytes(
     page_from: Optional[int] = None,
     page_to: Optional[int] = None,
     page_limit: Optional[int] = None,
-) -> List[Tuple[int, bytes]]:
+) -> List[Tuple[int, bytes, Tuple[int, int]]]:
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
 
     total_pages = len(doc)
@@ -96,12 +96,12 @@ def pdf_pages_to_png_bytes(
     zoom = dpi / 72.0
     mat = fitz.Matrix(zoom, zoom)
 
-    images: List[Tuple[int, bytes]] = []
+    images: List[Tuple[int, bytes, Tuple[int, int]]] = []
     for page_index in selected:
         page = doc.load_page(page_index)
         pix = page.get_pixmap(matrix=mat, alpha=False)
         img_bytes = pix.tobytes("png")
-        images.append((page_index, img_bytes))
+        images.append((page_index, img_bytes, (pix.width, pix.height)))
     return images
 
 
@@ -119,7 +119,12 @@ def ocr_image_bytes(
     return reader.readtext(image_bytes, detail=detail)
 
 
-def normalize_results(results: List[Any], detail: int) -> List[Dict[str, Any]]:
+def normalize_results(
+    results: List[Any],
+    detail: int,
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+) -> List[Dict[str, Any]]:
     if detail == 0:
         simplified = []
         for t in results:
@@ -142,25 +147,43 @@ def normalize_results(results: List[Any], detail: int) -> List[Dict[str, Any]]:
             # If format is unexpected, pass-through
             normalized.append({"raw": item})
             continue
-        # Coerce bbox values to built-in Python numbers
-        safe_box = []
-        try:
-            for pt in bbox:
-                if isinstance(pt, (list, tuple)) and len(pt) >= 2:
-                    safe_box.append(
-                        [_to_py_scalar(pt[0]), _to_py_scalar(pt[1])]
-                    )
-                else:
-                    safe_box.append(json_safe(pt))
-        except Exception:
-            safe_box = json_safe(bbox)
+        # Normalize bbox coordinates if width/height are provided; else just coerce types
+        safe_box: List[List[float]] = []
+        if width and height and width > 0 and height > 0:
+            try:
+                for pt in bbox:
+                    if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                        x = float(_to_py_scalar(pt[0])) / float(width)
+                        y = float(_to_py_scalar(pt[1])) / float(height)
+                        # Clamp to [0.0, 1.0]
+                        x = 0.0 if x < 0.0 else (1.0 if x > 1.0 else x)
+                        y = 0.0 if y < 0.0 else (1.0 if y > 1.0 else y)
+                        safe_box.append([x, y])
+            except Exception:
+                # Fallback to json-safe conversion if unexpected structure
+                safe_box = json_safe(bbox)
+        else:
+            try:
+                for pt in bbox:
+                    if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                        safe_box.append(
+                            [
+                                float(_to_py_scalar(pt[0])),
+                                float(_to_py_scalar(pt[1])),
+                            ]
+                        )
+                    else:
+                        val = json_safe(pt)
+                        # Ensure numeric types if possible
+                        if isinstance(val, (int, float)):
+                            safe_box.append([float(val), 0.0])
+                        else:
+                            safe_box.append(val)
+            except Exception:
+                safe_box = json_safe(bbox)
 
         normalized.append(
-            {
-                "box": safe_box,
-                "text": text,
-                "confidence": float(conf),
-            }
+            {"box": safe_box, "text": text, "confidence": float(conf)}
         )
     return normalized
 
@@ -230,13 +253,13 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
             )
 
             if not batched:
-                for idx, img_bytes in page_images:
+                for idx, img_bytes, (w, h) in page_images:
                     results = ocr_image_bytes(reader, img_bytes, detail=detail)
                     item["pages"].append(
                         {
                             "index": idx,
                             "results": normalize_results(
-                                results, detail=detail
+                                results, detail=detail, width=w, height=h
                             ),
                         }
                     )
@@ -246,13 +269,12 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
                 indices: List[int] = []
                 widths = []
                 heights = []
-                for idx, img_bytes in page_images:
+                for idx, img_bytes, (w, h) in page_images:
                     arr = image_bytes_to_array(img_bytes)
-                    h, w = arr.shape[:2]
-                    heights.append(h)
-                    widths.append(w)
                     arrays.append(arr)
                     indices.append(idx)
+                    widths.append(w)
+                    heights.append(h)
 
                 # If sizes differ and no target provided, choose a common size
                 nw, nh = n_width, n_height
@@ -270,11 +292,17 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
                 )
 
                 # Map back to pages
-                for idx, res in zip(indices, batched_results):
+                for idx, res, w, h in zip(
+                    indices, batched_results, widths, heights
+                ):
+                    eff_w = nw if nw else w
+                    eff_h = nh if nh else h
                     item["pages"].append(
                         {
                             "index": idx,
-                            "results": normalize_results(res, detail=detail),
+                            "results": normalize_results(
+                                res, detail=detail, width=eff_w, height=eff_h
+                            ),
                         }
                     )
 

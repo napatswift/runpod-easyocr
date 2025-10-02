@@ -2,7 +2,7 @@
 
 [![Runpod](https://api.runpod.io/badge/napatswift/runpod-easyocr)](https://console.runpod.io/hub/napatswift/runpod-easyocr)
 
-Serverless OCR for PDF files using EasyOCR on Runpod. Provide public PDF URLs and get extracted text with bounding boxes and confidence per page.
+Serverless OCR for PDF files using EasyOCR on Runpod. Provide public PDF URLs and get extracted text with bounding boxes (normalized to 0..1) and confidence per page.
 
 ## Input schema
 
@@ -76,3 +76,4 @@ You can run the handler locally by setting `INPUT_JSON` and executing the file, 
 - The worker uses PyMuPDF to render PDF pages to images, avoiding external system dependencies.
 - The EasyOCR Reader is cached between requests to avoid reloading weights.
 - Set default languages via env `READER_LANGS` (e.g., `ch_sim,en`).
+ - Output `box` coordinates are normalized: `x` in [0.0,1.0] relative to image width and `y` in [0.0,1.0] relative to image height.
