@@ -146,8 +146,7 @@ def correct_orientation_bytes(
 
         rotated = rgb
         if rotate_degrees % 360 != 0:
-            # PIL rotates counter-clockwise for positive angles; matches tutorial usage
-            rotated = rgb.rotate(rotate_degrees, expand=True)
+            rotated = rgb.rotate(0 - rotate_degrees, expand=True)
 
         buf = io.BytesIO()
         rotated.save(buf, format="PNG")
